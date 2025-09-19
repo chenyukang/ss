@@ -1,0 +1,16 @@
+[package]
+name = "riscv_hello"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+# 添加构建配置
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[target.riscv32imac-unknown-none-elf]
+rustflags = ["-C", "link-arg=-Tlink.ld"]
