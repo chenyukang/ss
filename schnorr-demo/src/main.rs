@@ -7,7 +7,7 @@ use std::io::Write; // 用于构建哈希输入
 
 // 这是一个简化的 Schnorr 零知识证明示例，演示了如何使用 Rust 实现基本的交互式证明过程。
 fn iteractive_schnorr() {
-    // 公开参数：素数p=204859, g=5, x=6 (秘密), h = 5^6 mod 204859 = 8
+    // 公开参数：素数p=204859, g=5, x=6 (秘密), h = 5^6 mod 204859 = 15625
     let p: BigInt = BigInt::from(204859u64);
     let g: BigInt = BigInt::from(5u32);
     let x: BigInt = BigInt::from(6u32); // 证明者的秘密

@@ -4,24 +4,24 @@ use elf::abi::PT_LOAD;
 // Define a sufficiently large memory space, e.g., 128MB
 const MEM_SIZE: usize = 128 * 1024 * 1024;
 
-pub struct CPU {
+pub struct VM {
     x_registers: [u32; 32],
     pc: u32,
     memory: Vec<u8>,
     mem_base: u32,
 }
 
-impl CPU {
+impl VM {
     pub fn new(code: Vec<u8>) -> Self {
-        let mut cpu = CPU {
+        let mut vm = VM {
             x_registers: [0; 32],
             pc: 0,
             memory: code,
             mem_base: 0,
         };
         // Register x0 is always 0, so we don't need to handle it
-        cpu.x_registers[0] = 0;
-        cpu
+        vm.x_registers[0] = 0;
+        vm
     }
 
     pub fn new_from_elf(elf_data: &[u8]) -> Self {
@@ -59,15 +59,15 @@ impl CPU {
             }
         }
 
-        let mut cpu = CPU {
+        let mut vm = VM {
             x_registers: [0; 32],
             // Set directly to entry_point to match the linker script
             pc: entry_point,
             memory,
             mem_base: entry_point,
         };
-        cpu.x_registers[0] = 0;
-        cpu
+        vm.x_registers[0] = 0;
+        vm
     }
 
     pub fn run(&mut self) {
@@ -477,20 +477,20 @@ fn run_from_elf() {
     file.read_to_end(&mut elf_data)
         .expect("Failed to read the file");
 
-    // 2. Create CPU instance
-    let mut cpu = CPU::new_from_elf(&elf_data);
+    // 2. Create vm instance
+    let mut vm = VM::new_from_elf(&elf_data);
 
     // 3. Run the virtual machine
-    cpu.run();
+    vm.run();
 
     // 4. Output register state
     for i in 0..32 {
-        println!("x{}: {:#x}", i, cpu.x_registers[i]);
+        println!("x{}: {:#x}", i, vm.x_registers[i]);
     }
 
     // 5. Verify results
     const RESULT_VIRT_ADDR: u32 = 0x1000;
-    let val = cpu.get_val_at_addr(0x1000);
+    let val = vm.get_val_at_addr(0x1000);
     eprintln!("Value at {:#x}: {}", RESULT_VIRT_ADDR, val);
     const EXPECTED_RESULT: u32 = 55; // 1 + 2 + ... + 10
     assert_eq!(val, EXPECTED_RESULT);
@@ -508,14 +508,14 @@ fn run_basic_test() {
         0xb3, 0x83, 0x62, 0x00, // ADD  x7, x5, x6
     ];
 
-    let mut cpu = CPU::new(program);
-    cpu.run();
+    let mut vm = VM::new(program);
+    vm.run();
 
     // Verify results
-    assert_eq!(cpu.x_registers[5], 1);
-    assert_eq!(cpu.x_registers[6], 2);
-    eprintln!("reg[7]={}", cpu.x_registers[7]);
-    assert_eq!(cpu.x_registers[7], 3);
+    assert_eq!(vm.x_registers[5], 1);
+    assert_eq!(vm.x_registers[6], 2);
+    eprintln!("reg[7]={}", vm.x_registers[7]);
+    assert_eq!(vm.x_registers[7], 3);
 }
 
 fn main() {}

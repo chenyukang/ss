@@ -16,21 +16,21 @@ enum Instruction {
     },
 }
 
-/// RISC-V virtual machine CPU
-pub struct CPU {
+/// RISC-V virtual machine vm
+pub struct VM {
     x_registers: [u32; 32],
     pc: u32,
     memory: Vec<u8>,
 }
 
-impl Default for CPU {
+impl Default for VM {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CPU {
-    /// Create a new CPU instance with initialized registers
+impl VM {
+    /// Create a new vm instance with initialized registers
     pub fn new() -> Self {
         Self {
             x_registers: [0; 32],
@@ -244,9 +244,9 @@ fn run_demo(name: &str, description: &str, program: Vec<u8>) {
     println!("===============================");
     println!("Program: {}\n", description);
 
-    let mut cpu = CPU::new();
-    cpu.load_program(program);
-    cpu.run();
+    let mut vm = VM::new();
+    vm.load_program(program);
+    vm.run();
     println!();
 }
 
