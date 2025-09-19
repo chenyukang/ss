@@ -471,9 +471,8 @@ fn run_from_elf() {
     use std::io::Read;
 
     // 1. Read the ELF file
-    let mut file =
-        File::open("./riscv_hello/target/riscv32imac-unknown-none-elf/release/riscv_hello")
-            .expect("Failed to open the RISC-V executable file");
+    let mut file = File::open("./demo/target/riscv32imac-unknown-none-elf/release/demo")
+        .expect("Failed to open the RISC-V executable file");
     let mut elf_data = Vec::new();
     file.read_to_end(&mut elf_data)
         .expect("Failed to read the file");
