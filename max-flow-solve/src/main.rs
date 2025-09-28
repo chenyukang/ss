@@ -64,7 +64,7 @@ pub fn solve_flow_problem(
         .collect();
 
     // 1.2 & 1.3 & 阶段二: 计算带有下界约束的最大流
-    let (mut final_flow_graph, max_flow) =
+    let (_final_flow_graph, max_flow) =
         calculate_max_flow(num_nodes, &lower_bound_edges, source, target)
             .map_err(|e| e.to_string())?;
 
@@ -77,7 +77,9 @@ pub fn solve_flow_problem(
     }
 
     // --- 阶段三: 寻找基础路径 (流分解) ---
-    let decomposed_paths = decompose_flow(&mut final_flow_graph, source, target);
+    // 使用原始边（未合并）进行路径分解，以保持路径的原始容量限制
+    let decomposed_paths =
+        decompose_flow_with_original_edges(num_nodes, edges, source, target, max_flow);
 
     // --- 阶段四: 组合路径 (满足 amount 和 M 约束) ---
     combine_paths(decomposed_paths, amount, parts)
@@ -257,6 +259,24 @@ fn calculate_max_flow(
 }
 
 // --- 阶段三 辅助函数 ---
+/// 使用原始边进行路径分解，保持每条路径的原始容量限制
+fn decompose_flow_with_original_edges(
+    num_nodes: usize,
+    original_edges: &[InputEdge],
+    source: usize,
+    target: usize,
+    _max_flow: i64,
+) -> Vec<DecomposedPath> {
+    // 构建基于原始边的图，每条边保持其原始容量
+    let mut graph = Graph::new(num_nodes);
+    for edge in original_edges {
+        graph.add_edge(edge.from, edge.to, edge.max_flow);
+    }
+
+    // 进行路径分解
+    decompose_flow(&mut graph, source, target)
+}
+
 fn decompose_flow(flow_graph: &mut Graph, s: usize, t: usize) -> Vec<DecomposedPath> {
     let mut paths = Vec::new();
     loop {
@@ -435,7 +455,8 @@ mod tests {
                 to: 1,
                 min_flow: 0,
                 max_flow: 100,
-            }, // 合并后 0->1 cap 200
+            },
+            // 合并后 0->1 cap 200
             InputEdge {
                 from: 1,
                 to: 2,
@@ -444,18 +465,39 @@ mod tests {
             },
         ];
 
-        // M=1, should fail because single path capacity is 100 < 150
-        // The decomposition will find one path 0->1->2 with capacity 200.
-        // But the user constraint is on number of paths (M). The logic is tricky.
-        // Let's re-read: find AT MOST M paths.
-        // A single path 0->1->2 can carry 200. So taking 150 on it is valid.
-        // The user's example "1->2之间最多能通过100" refers to ONE edge.
-        // Ah, the decomposition needs to be on original edges! My code aggregates.
-        // Let's adjust the decomposition to respect the original multi-graph structure.
-        // No, the math works out. A single path *conceptually* has the aggregated capacity.
-        // The example is slightly ambiguous. The algorithm is correct. I'll test the *spirit* of the example.
-        // The real test should be if M is the constraint.
-        // Let's create a better M-constrained test.
+        let result = solve_flow_problem(3, &edges, 0, 2, 200, 1);
+        assert!(result.is_err());
+
+        // 测试1: M=1，要求传输150单位，应该失败因为单条路径最大容量受限
+        // 虽然合并后0->1有200容量，但在路径分解时每条路径最多只能使用原始边的容量
+        let result = solve_flow_problem(3, &edges, 0, 2, 150, 1);
+        eprintln!("Result for amount=150, M=1: {:?}", result);
+        assert!(
+            result.is_err(),
+            "Should fail: single path cannot carry 150 units"
+        );
+
+        // 测试2: M=2，要求传输150单位，应该成功
+        let result = solve_flow_problem(3, &edges, 0, 2, 150, 2);
+        eprintln!("Result for amount=150, M=2: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Should succeed: two paths can carry 150 units"
+        );
+        let solution = result.unwrap();
+        let total_flow: i64 = solution.iter().map(|p| p.flow).sum();
+        assert_eq!(total_flow, 150);
+
+        // M=1, should fail because single path capacity is 100 < 250
+        let result = solve_flow_problem(3, &edges, 0, 2, 250, 1);
+        assert!(result.is_err());
+
+        // M=2, should fail because single path capacity is 100 < 250
+        let result = solve_flow_problem(3, &edges, 0, 2, 250, 2);
+        assert!(result.is_err());
+
+        let result = solve_flow_problem(3, &edges, 0, 2, 200, 2);
+        assert!(result.is_ok());
 
         // M=3, amount=150. Should succeed.
         let result = solve_flow_problem(3, &edges, 0, 2, 150, 3);
