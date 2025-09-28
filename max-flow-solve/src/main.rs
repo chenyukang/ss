@@ -65,7 +65,7 @@ pub fn solve_flow_problem(
 
     // 1.2 & 1.3 & 阶段二: 计算带有下界约束的最大流
     let (mut final_flow_graph, max_flow) =
-        calculate_max_flow_with_lower_bounds(num_nodes, &lower_bound_edges, source, target)
+        calculate_max_flow(num_nodes, &lower_bound_edges, source, target)
             .map_err(|e| e.to_string())?;
 
     // 2.2: 容量检查
@@ -193,7 +193,7 @@ impl Dinic {
 }
 
 // --- 阶段一 & 二 辅助函数 ---
-fn calculate_max_flow_with_lower_bounds(
+fn calculate_max_flow(
     num_nodes: usize,
     edges: &[InputEdge],
     source: usize,
@@ -1718,5 +1718,135 @@ mod tests {
             }, // 无效
         ];
         let _result = solve_flow_problem(2, &invalid_edges, 0, 1, 5, 1);
+    }
+
+    // Test 34: 经典的双路径网络图测试
+    // 网络拓扑：
+    //     A
+    //   1/ \1
+    //   S   T
+    //   1\ /1
+    //     B
+    //   加上 A->B (容量1)
+    #[test]
+    fn test_dual_path_with_cross_edge() {
+        let edges = vec![
+            // 源点到中间节点的边
+            InputEdge {
+                from: 0, // S
+                to: 1,   // A
+                min_flow: 0,
+                max_flow: 1,
+            },
+            InputEdge {
+                from: 0, // S
+                to: 2,   // B
+                min_flow: 0,
+                max_flow: 1,
+            },
+            // 中间节点到汇点的边
+            InputEdge {
+                from: 1, // A
+                to: 3,   // T
+                min_flow: 0,
+                max_flow: 1,
+            },
+            InputEdge {
+                from: 2, // B
+                to: 3,   // T
+                min_flow: 0,
+                max_flow: 1,
+            },
+            // 中间节点之间的交叉边
+            InputEdge {
+                from: 1, // A
+                to: 2,   // B
+                min_flow: 0,
+                max_flow: 1,
+            },
+        ];
+
+        // 节点映射: 0=S, 1=A, 2=B, 3=T
+        let num_nodes = 4;
+        let source = 0; // S
+        let target = 3; // T
+
+        // 测试1: 请求1单位流量，应该成功（有多条路径可选）
+        let result = solve_flow_problem(num_nodes, &edges, source, target, 1, 1);
+        assert!(result.is_ok(), "Should be able to route 1 unit of flow");
+        let solution = result.unwrap();
+        assert_eq!(solution.len(), 1);
+        assert_eq!(solution[0].flow, 1);
+        let total_flow: i64 = solution.iter().map(|p| p.flow).sum();
+        assert_eq!(total_flow, 1);
+
+        // 测试2: 请求2单位流量，应该成功（最大流是2）
+        let result = solve_flow_problem(num_nodes, &edges, source, target, 2, 2);
+        assert!(result.is_ok(), "Should be able to route 2 units of flow");
+        let solution = result.unwrap();
+        let total_flow: i64 = solution.iter().map(|p| p.flow).sum();
+        assert_eq!(total_flow, 2);
+        // 应该需要两条路径来实现2单位的流量
+        assert!(solution.len() <= 2, "Should use at most 2 paths");
+
+        // 测试3: 请求3单位流量，应该失败（超过最大流容量）
+        let result = solve_flow_problem(num_nodes, &edges, source, target, 3, 3);
+        assert!(
+            result.is_err(),
+            "Should fail to route 3 units - exceeds max flow"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Insufficient network capacity: max flow is 2")
+        );
+
+        // 测试4: 限制路径数为1但请求2单位流量
+        let result = solve_flow_problem(num_nodes, &edges, source, target, 2, 1);
+        assert!(
+            result.is_err(),
+            "Should fail with M=1 constraint for 2 units"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Could not satisfy amount 2 with M=1 paths")
+        );
+
+        // 测试5: 验证实际路径的合理性
+        let result = solve_flow_problem(num_nodes, &edges, source, target, 2, 3);
+        assert!(result.is_ok());
+        let solution = result.unwrap();
+
+        println!("Dual path network test paths:");
+        for path in &solution {
+            println!("  Path: {:?}, Flow: {}", path.path, path.flow);
+        }
+
+        // 验证路径的有效性
+        for path_sol in &solution {
+            assert!(!path_sol.path.is_empty(), "Path should not be empty");
+            assert_eq!(path_sol.path[0], source, "Path should start at source");
+            assert_eq!(
+                path_sol.path[path_sol.path.len() - 1],
+                target,
+                "Path should end at target"
+            );
+            assert!(path_sol.flow > 0, "Flow should be positive");
+        }
+
+        // 验证路径的连通性（每条边都应该在输入边集中存在）
+        for path_sol in &solution {
+            for i in 0..path_sol.path.len() - 1 {
+                let from = path_sol.path[i];
+                let to = path_sol.path[i + 1];
+                let edge_exists = edges.iter().any(|e| e.from == from && e.to == to);
+                assert!(
+                    edge_exists,
+                    "Edge {} -> {} should exist in the input graph",
+                    from, to
+                );
+            }
+        }
     }
 }
