@@ -110,19 +110,179 @@ impl Dinic {
 }
 
 
-// --- 2. 带有下界约束的最大流主逻辑 ---
+// --- 2. 多路径流量分配问题 ---
 
 // 用于描述原始图的边
-struct EdgeWithLowerBound {
+#[derive(Debug, Clone)]
+struct EdgeWithMinFlow {
     from: usize,
     to: usize,
-    lower_bound: i64,
-    cap: i64,
+    min_flow: i64,  // 最小流量要求，0表示无限制
+    max_flow: i64,  // 最大容量
 }
 
-/// 计算带有下界约束的最大流
-/// 返回 Result，如果无解则返回 Err
-fn max_flow_with_lower_bounds(
+// 路径表示
+#[derive(Debug, Clone)]
+struct FlowPath {
+    nodes: Vec<usize>,
+    flow: i64,
+}
+
+// 多路径流量分配结果
+#[derive(Debug)]
+struct MultiPathResult {
+    paths: Vec<FlowPath>,
+    total_flow: i64,
+    success: bool,
+}
+
+/// 多路径流量分配算法
+///
+/// 算法思路：
+/// 1. 使用贪心策略逐条寻找路径
+/// 2. 每次找到一条从source到sink的路径，传输尽可能多的流量
+/// 3. 更新图的剩余容量
+/// 4. 重复直到无法找到更多路径或达到路径数量限制
+fn find_multi_paths(
+    num_nodes: usize,
+    edges: &[EdgeWithMinFlow],
+    source: usize,
+    sink: usize,
+    target_amount: i64,
+    max_paths: usize,
+) -> MultiPathResult {
+    // 构建邻接表，每条边存储 (to, min_flow, remaining_capacity, edge_index)
+    let mut graph: Vec<Vec<(usize, i64, i64, usize)>> = vec![vec![]; num_nodes];
+    let mut edge_capacities: Vec<i64> = Vec::new();
+
+    for (i, edge) in edges.iter().enumerate() {
+        graph[edge.from].push((edge.to, edge.min_flow, edge.max_flow, i));
+        edge_capacities.push(edge.max_flow);
+    }
+
+    let mut paths = Vec::new();
+    let mut total_flow = 0;
+    let mut remaining_amount = target_amount;
+
+    // 贪心寻找路径
+    for path_count in 0..max_paths {
+        if remaining_amount <= 0 {
+            break;
+        }
+
+        // 使用DFS寻找一条可行路径
+        let mut visited = vec![false; num_nodes];
+        let mut path_nodes = Vec::new();
+        let mut path_edges = Vec::new();
+
+        if let Some((flow, nodes, used_edges)) = dfs_find_path(
+            &graph,
+            &edge_capacities,
+            source,
+            sink,
+            remaining_amount,
+            &mut visited,
+            &mut path_nodes,
+            &mut path_edges,
+        ) {
+            // 更新边的剩余容量
+            for &edge_idx in &used_edges {
+                edge_capacities[edge_idx] -= flow;
+            }
+
+            paths.push(FlowPath {
+                nodes: nodes,
+                flow: flow,
+            });
+
+            total_flow += flow;
+            remaining_amount -= flow;
+
+            println!("找到路径 {}: 流量 {}, 剩余需求 {}", path_count + 1, flow, remaining_amount);
+        } else {
+            // 无法找到更多路径
+            break;
+        }
+    }
+
+    MultiPathResult {
+        paths,
+        total_flow,
+        success: total_flow >= target_amount,
+    }
+}
+
+/// DFS寻找单条路径
+fn dfs_find_path(
+    graph: &Vec<Vec<(usize, i64, i64, usize)>>,
+    edge_capacities: &Vec<i64>,
+    current: usize,
+    sink: usize,
+    max_flow: i64,
+    visited: &mut Vec<bool>,
+    path_nodes: &mut Vec<usize>,
+    path_edges: &mut Vec<usize>,
+) -> Option<(i64, Vec<usize>, Vec<usize>)> {
+    if current == sink {
+        let mut result_nodes = path_nodes.clone();
+        result_nodes.push(sink);
+        return Some((max_flow, result_nodes, path_edges.clone()));
+    }
+
+    visited[current] = true;
+    path_nodes.push(current);
+
+    // 尝试每条出边
+    for &(next_node, min_flow, _max_flow, edge_idx) in &graph[current] {
+        if visited[next_node] {
+            continue;
+        }
+
+        let remaining_capacity = edge_capacities[edge_idx];
+
+        // 检查容量约束和最小流量约束
+        if remaining_capacity <= 0 {
+            continue;
+        }
+
+        // 如果有最小流量要求，检查是否能满足
+        let usable_flow = if min_flow > 0 {
+            if remaining_capacity < min_flow {
+                continue; // 不能满足最小流量要求
+            }
+            remaining_capacity.min(max_flow)
+        } else {
+            remaining_capacity.min(max_flow)
+        };
+
+        if usable_flow <= 0 {
+            continue;
+        }
+
+        path_edges.push(edge_idx);
+
+        if let Some((flow, nodes, edges)) = dfs_find_path(
+            graph,
+            edge_capacities,
+            next_node,
+            sink,
+            usable_flow,
+            visited,
+            path_nodes,
+            path_edges,
+        ) {
+            path_nodes.pop();
+            visited[current] = false;
+            return Some((flow, nodes, edges));
+        }
+
+        path_edges.pop();
+    }
+
+    path_nodes.pop();
+    visited[current] = false;
+    None
+}
     num_nodes: usize,
     edges: &[EdgeWithLowerBound],
     s: usize,
