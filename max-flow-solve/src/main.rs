@@ -23,6 +23,31 @@ pub struct SolutionPath {
     pub flow: i64,
 }
 
+// --- 新增：用于简化代码的内部辅助结构 ---
+
+/// 预处理后的并行边组信息
+struct EdgeGroup<'a> {
+    edges: Vec<&'a InputEdge>,
+    sum_min: i64,
+    sum_max: i64,
+}
+
+impl<'a> EdgeGroup<'a> {
+    fn new() -> Self {
+        Self {
+            edges: Vec::new(),
+            sum_min: 0,
+            sum_max: 0,
+        }
+    }
+
+    fn add_edge(&mut self, edge: &'a InputEdge) {
+        self.edges.push(edge);
+        self.sum_min += edge.min_flow.max(0);
+        self.sum_max += edge.max_flow;
+    }
+}
+
 /// 综合解决函数，实现了四阶段算法
 pub fn solve_flow_problem(
     num_nodes: usize,
@@ -32,23 +57,22 @@ pub fn solve_flow_problem(
     amount: i64,
     parts: usize,
 ) -> Result<Vec<SolutionPath>, String> {
-    // 特殊情况：源等于目标
     if source == target {
         return Err("source and target cannot be the same".to_string());
     }
-    if amount == 0 {
+    if amount <= 0 {
         return Err("amount must be positive".to_string());
     }
+    if parts == 0 {
+        return Err("parts (M) must be positive".to_string());
+    }
 
-    // --- 阶段三: 寻找基础路径 (流分解) ---
-    // 使用原始边进行路径分解，正确处理 min_flow 约束
+    // --- 阶段一 & 二: 分解与组合 ---
     let decomposed_paths = decompose_flow_with_constraints(num_nodes, edges, source, target);
-
-    // --- 阶段四: 组合路径 (满足 amount 和 M 约束) ---
     let solution = combine_paths(decomposed_paths, amount, parts)?;
 
-    // --- 阶段五: 验证解决方案是否满足min_flow约束 ---
-    validate_min_flow_constraints(&solution, edges)?;
+    // --- 阶段三: 验证解决方案 ---
+    validate_solution(&solution, edges)?;
 
     Ok(solution)
 }
@@ -162,7 +186,125 @@ impl Dinic {
     }
 }
 
-// --- 阶段三 辅助函数 ---
+// --- 阶段三: 验证 ---
+
+/// 验证解决方案是否满足所有约束
+fn validate_solution(
+    solution: &[SolutionPath],
+    original_edges: &[InputEdge],
+) -> Result<(), String> {
+    // 1. 预处理边，按 (from, to) 分组
+    let mut groups: HashMap<(usize, usize), EdgeGroup> = HashMap::new();
+    for edge in original_edges {
+        groups
+            .entry((edge.from, edge.to))
+            .or_insert_with(EdgeGroup::new)
+            .add_edge(edge);
+    }
+
+    // 2. 统计每组边上实际使用的总流量
+    let mut edge_flows: HashMap<(usize, usize), i64> = HashMap::new();
+    for sp in solution {
+        for w in sp.path.windows(2) {
+            *edge_flows.entry((w[0], w[1])).or_insert(0) += sp.flow;
+        }
+    }
+
+    // 3. 逐组验证
+    for (edge_key, group) in &groups {
+        let total_flow_used = edge_flows.get(edge_key).copied().unwrap_or(0);
+
+        // 如果这组边没有被使用，跳过
+        if total_flow_used == 0 {
+            continue;
+        }
+
+        // 检查是否超过最大容量总和
+        if total_flow_used > group.sum_max {
+            return Err(format!(
+                "Max flow constraint violated: edge ({:?}) has total max_flow={} but got {}",
+                edge_key, group.sum_max, total_flow_used
+            ));
+        }
+
+        // 收集流经此组的所有路径流量
+        let path_flows: Vec<i64> = solution
+            .iter()
+            .filter(|sp| {
+                sp.path
+                    .windows(2)
+                    .any(|w| w[0] == edge_key.0 && w[1] == edge_key.1)
+            })
+            .map(|sp| sp.flow)
+            .collect();
+
+        // 验证 min_flow 约束
+        validate_min_flow_for_group(&path_flows, group, edge_key)?;
+    }
+
+    Ok(())
+}
+
+/// 对单个边组验证 min_flow 约束（混合策略）
+fn validate_min_flow_for_group(
+    path_flows: &[i64],
+    group: &EdgeGroup,
+    edge_key: &(usize, usize),
+) -> Result<(), String> {
+    // 尝试严格一对一匹配
+    if try_strict_one_to_one_mapping(path_flows, group) {
+        return Ok(());
+    }
+
+    // 如果严格匹配失败，回退到聚合模式
+    let total_flow: i64 = path_flows.iter().sum();
+    if total_flow < group.sum_min {
+        return Err(format!(
+            "Min flow constraint violated: cannot aggregate path flows {:?} for edges ({:?}) with aggregated min_flow {}",
+            path_flows, edge_key, group.sum_min
+        ));
+    }
+
+    Ok(())
+}
+
+/// 尝试对一个边组进行严格的一对一路径-物理边匹配
+fn try_strict_one_to_one_mapping(path_flows: &[i64], group: &EdgeGroup) -> bool {
+    if path_flows.len() > group.edges.len() {
+        return false;
+    }
+
+    let mut sorted_flows = path_flows.to_vec();
+    sorted_flows.sort_by(|a, b| b.cmp(a));
+
+    let mut sorted_edges = group.edges.clone();
+    sorted_edges.sort_by(|a, b| b.min_flow.cmp(&a.min_flow));
+
+    let mut used_edges = vec![false; sorted_edges.len()];
+
+    fn dfs(path_idx: usize, flows: &[i64], edges: &[&InputEdge], used: &mut [bool]) -> bool {
+        if path_idx == flows.len() {
+            return true;
+        }
+
+        let flow = flows[path_idx];
+        for (i, edge) in edges.iter().enumerate() {
+            if !used[i] && flow >= edge.min_flow && flow <= edge.max_flow {
+                used[i] = true;
+                if dfs(path_idx + 1, flows, edges, used) {
+                    return true;
+                }
+                used[i] = false;
+            }
+        }
+        false
+    }
+
+    dfs(0, &sorted_flows, &sorted_edges, &mut used_edges)
+}
+
+// --- 阶段一 & 二: 分解与组合 ---
+
 /// 带约束的路径分解
 fn decompose_flow_with_constraints(
     num_nodes: usize,
@@ -198,178 +340,6 @@ fn decompose_flow_with_constraints(
 
     // 分解流为路径
     decompose_flow(&mut flow_graph, source, target)
-}
-
-/// 验证解决方案是否满足min_flow约束
-/// min_flow是强约束：如果一条边被使用，就必须满足min_flow要求
-fn validate_min_flow_constraints(
-    solution: &[SolutionPath],
-    original_edges: &[InputEdge],
-) -> Result<(), String> {
-    // 统计每个 (u,v) 的总路径流量
-    let mut edge_flows: HashMap<(usize, usize), i64> = HashMap::new();
-    for sp in solution {
-        for w in sp.path.windows(2) {
-            *edge_flows.entry((w[0], w[1])).or_insert(0) += sp.flow;
-        }
-    }
-
-    // 聚合 max_flow 以快速做上界检查
-    let mut aggregated: HashMap<(usize, usize), i64> = HashMap::new();
-    for e in original_edges {
-        *aggregated.entry((e.from, e.to)).or_insert(0) += e.max_flow;
-    }
-    for (&k, &sum_max) in &aggregated {
-        let used = *edge_flows.get(&k).unwrap_or(&0);
-        if used > sum_max {
-            return Err(format!(
-                "Max flow constraint violated: edge ({}->{}) has max_flow={} but got {}",
-                k.0, k.1, sum_max, used
-            ));
-        }
-    }
-
-    // 分组并行物理边
-    let mut groups: HashMap<(usize, usize), Vec<&InputEdge>> = HashMap::new();
-    for e in original_edges {
-        groups.entry((e.from, e.to)).or_insert(Vec::new()).push(e);
-    }
-
-    // 为每组做严格匹配：一条路径对应一条物理边，路径流量必须 ∈ [min,max]
-    for ((from, to), phys_edges) in groups {
-        let mut path_flows: Vec<i64> = Vec::new();
-        for sp in solution {
-            for w in sp.path.windows(2) {
-                if w[0] == from && w[1] == to {
-                    path_flows.push(sp.flow);
-                    break;
-                }
-            }
-        }
-        if path_flows.is_empty() {
-            continue;
-        }
-
-        // 先计算聚合上下界判定是否具备“瓶颈可复用”潜力
-        let sum_flow: i64 = path_flows.iter().sum();
-        let sum_min: i64 = phys_edges.iter().map(|e| e.min_flow.max(0)).sum();
-        let sum_max: i64 = phys_edges.iter().map(|e| e.max_flow).sum();
-
-        if phys_edges.len() == 1 {
-            // 单物理边：允许聚合（多条路径共享），只需总流量满足区间
-            let e = phys_edges[0];
-            if sum_flow < e.min_flow || sum_flow > e.max_flow {
-                return Err(format!(
-                    "Min flow constraint violated: total {} not in [{},{}] for edge ({}->{})",
-                    sum_flow, e.min_flow, e.max_flow, from, to
-                ));
-            }
-            continue;
-        }
-
-        // 尝试严格模式 C
-        let strict_ok;
-        if path_flows.len() > phys_edges.len() {
-            strict_ok = false; // 无法一对一
-        } else {
-            // 复制严格匹配逻辑（回溯）
-            let mut pf = path_flows.clone();
-            pf.sort_by(|a, b| b.cmp(a));
-            let mut indexed_edges: Vec<(usize, &InputEdge)> = phys_edges
-                .iter()
-                .enumerate()
-                .map(|(i, e)| (i, *e))
-                .collect();
-            indexed_edges.sort_by(|a, b| {
-                b.1.min_flow
-                    .cmp(&a.1.min_flow)
-                    .then(b.1.max_flow.cmp(&a.1.max_flow))
-            });
-            let required_edges: Vec<usize> = indexed_edges
-                .iter()
-                .filter(|(_, e)| e.min_flow > 0)
-                .map(|(i, _)| *i)
-                .collect();
-            let n_edges = phys_edges.len();
-            let mut used_edge = vec![false; n_edges];
-            let mut ok = false;
-            fn dfs(
-                pi: usize,
-                path_flows: &[i64],
-                indexed_edges: &[(usize, &InputEdge)],
-                used: &mut [bool],
-                required_edges: &[usize],
-                ok: &mut bool,
-            ) {
-                if *ok {
-                    return;
-                }
-                if pi == path_flows.len() {
-                    for &ri in required_edges {
-                        if !used[ri] {
-                            return;
-                        }
-                    }
-                    *ok = true;
-                    return;
-                }
-                let flow = path_flows[pi];
-                let remaining_paths = path_flows.len() - pi;
-                let remaining_required = required_edges.iter().filter(|&&ri| !used[ri]).count();
-                if remaining_paths < remaining_required {
-                    return;
-                }
-                for (real_idx, e) in indexed_edges.iter() {
-                    let ei = *real_idx;
-                    if used[ei] {
-                        continue;
-                    }
-                    if flow < e.min_flow || flow > e.max_flow {
-                        continue;
-                    }
-                    used[ei] = true;
-                    dfs(pi + 1, path_flows, indexed_edges, used, required_edges, ok);
-                    used[ei] = false;
-                    if *ok {
-                        return;
-                    }
-                }
-            }
-            dfs(
-                0,
-                &pf,
-                &indexed_edges,
-                &mut used_edge,
-                &required_edges,
-                &mut ok,
-            );
-            strict_ok = ok;
-        }
-
-        if strict_ok {
-            continue; // 严格模式通过
-        }
-
-        // 进入聚合模式：将该 (from,to) 视为瓶颈可复用，允许单条路径代表多条物理边总需求
-        // 条件：总流量需满足所有 min_flow 之和，并且不超过所有 max_flow 之和
-        if sum_flow < sum_min || sum_flow > sum_max {
-            return Err(format!(
-                "Min flow constraint violated: cannot aggregate path flows {:?} for edges ({}->{}) with aggregated bounds [{},{}] (edge mins/maxs {:?})",
-                path_flows,
-                from,
-                to,
-                sum_min,
-                sum_max,
-                phys_edges
-                    .iter()
-                    .map(|e| (e.min_flow, e.max_flow))
-                    .collect::<Vec<_>>()
-            ));
-        }
-        // 否则通过（视为瓶颈边允许复用）
-    }
-
-    Ok(())
 }
 
 fn decompose_flow(flow_graph: &mut Graph, s: usize, t: usize) -> Vec<DecomposedPath> {
@@ -432,7 +402,6 @@ fn decompose_flow(flow_graph: &mut Graph, s: usize, t: usize) -> Vec<DecomposedP
     paths
 }
 
-// --- 阶段四 辅助函数 ---
 fn combine_paths(
     mut decomposed_paths: Vec<DecomposedPath>,
     amount: i64,
@@ -445,16 +414,13 @@ fn combine_paths(
         return Err("M must be positive".into());
     }
     if decomposed_paths.is_empty() {
-        return Err(format!(
-            "Could not satisfy amount {} with M={} paths. {} still remaining.",
-            amount, m, amount
-        ));
+        return Err("No available paths.".to_string());
     }
 
-    // 按容量降序
+    // 按容量降序排序
     decomposed_paths.sort_by(|a, b| b.flow.cmp(&a.flow));
 
-    // 1) 特例：最大路径直接满足请求且不需要强制平衡 → 用单路径
+    // 1) 特例：如果最大的一条路径就能满足需求，直接使用它
     if decomposed_paths[0].flow >= amount {
         return Ok(vec![SolutionPath {
             path: decomposed_paths[0].path.clone(),
@@ -462,7 +428,7 @@ fn combine_paths(
         }]);
     }
 
-    // 2) 贪心填充（尽量满载一条再下一条）
+    // 2) 贪心填充：从大到小选择路径，直到满足 amount
     let mut result: Vec<SolutionPath> = Vec::new();
     let mut remaining = amount;
     for p in decomposed_paths.iter().take(m) {
@@ -485,34 +451,41 @@ fn combine_paths(
         ));
     }
 
-    // 4) 多于两条且路径完全相同的均衡：尝试平均分配（典型并行边 100,100,70 需要改成 90,90,90）
-    if result.len() >= 2 {
-        let all_same_path = result.iter().all(|sp| sp.path == result[0].path);
-        if all_same_path {
-            let k = result.len() as i64;
-            if amount % k == 0 {
-                let target = amount / k;
-                // 收集该路径的所有可用容量（分解中可能出现 >=k 次）
-                let mut capacities: Vec<i64> = decomposed_paths
-                    .iter()
-                    .filter(|dp| dp.path == result[0].path)
-                    .map(|dp| dp.flow)
-                    .collect();
-                capacities.sort_by(|a, b| b.cmp(a));
-                if capacities.len() >= result.len()
-                    && capacities.iter().take(result.len()).all(|&c| c >= target)
-                {
-                    if result.iter().any(|sp| sp.flow != target) {
-                        for sp in &mut result {
-                            sp.flow = target;
-                        }
-                    }
+    // 3) 尝试平衡：对贪心选择的结果进行流量调整
+    try_balance_paths(&mut result, amount, &decomposed_paths);
+
+    Ok(result)
+}
+
+/// 尝试对选中的路径进行流量平衡，以帮助满足后续的min_flow约束。
+fn try_balance_paths(
+    result: &mut Vec<SolutionPath>,
+    amount: i64,
+    decomposed_paths: &[DecomposedPath],
+) {
+    // 主要平衡策略：处理多条完全相同的并行路径。
+    // 场景：当为满足 amount 而选择的所有路径都共享完全相同的节点序列时，
+    // 贪心分配可能导致流量不均（如100, 100, 70），而约束可能要求均匀分配（如90, 90, 90）。
+    let k = result.len();
+    if k >= 2 && result.iter().all(|sp| sp.path == result[0].path) {
+        if amount % (k as i64) == 0 {
+            let target_flow = amount / (k as i64);
+            // 检查原始分解路径的容量是否都支持目标流量
+            let sufficient_capacity = decomposed_paths
+                .iter()
+                .filter(|dp| dp.path == result[0].path)
+                .take(k)
+                .all(|dp| dp.flow >= target_flow);
+
+            if sufficient_capacity {
+                // 如果容量足够，则均匀分配流量
+                for sp in result {
+                    sp.flow = target_flow;
                 }
+                return; // 平衡完成，直接返回
             }
         }
     }
-
-    Ok(result)
 }
 
 // --- Section 3: Main Function & Unit Tests ---
@@ -964,7 +937,7 @@ mod tests {
         eprintln!("Disconnected graph test result: {:?}", result);
         // 现在会更早地检测到连通性问题
         let error_msg = result.unwrap_err();
-        assert!(error_msg.contains("50 still remaining."));
+        assert!(error_msg.contains("No available paths."));
     }
 
     // Test 10: Very large numbers
@@ -1152,6 +1125,7 @@ mod tests {
         assert!(result.is_err());
 
         let result_fail = solve_flow_problem(2, &edges, 0, 1, 50, 0);
+        eprintln!("M=0 test result: {:?}", result_fail);
         assert!(result_fail.is_err()); // Positive amount with M=0 should fail
     }
 
