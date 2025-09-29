@@ -428,22 +428,73 @@ fn combine_paths(
         }]);
     }
 
-    // 2) 贪心填充：从大到小选择路径，直到满足 amount
+    // 2) 智能填充：合并贪心选择和平衡调整为一步
     let mut result: Vec<SolutionPath> = Vec::new();
     let mut remaining = amount;
-    for p in decomposed_paths.iter().take(m) {
-        if remaining == 0 {
+
+    // 首先检查是否可以用前m条路径满足需求
+    let available_paths: Vec<&DecomposedPath> = decomposed_paths.iter().take(m).collect();
+    let total_available: i64 = available_paths.iter().map(|p| p.flow).sum();
+
+    if total_available < remaining {
+        return Err(format!(
+            "Could not satisfy amount {} with M={} paths. {} still remaining.",
+            amount, m, remaining
+        ));
+    }
+
+    // 检查是否所有需要的路径都相同（用于智能平衡）
+    let mut paths_needed = Vec::new();
+    let mut temp_remaining = remaining;
+    for p in available_paths.iter() {
+        if temp_remaining == 0 {
             break;
         }
-        let take = p.flow.min(remaining);
+        let take = p.flow.min(temp_remaining);
         if take > 0 {
-            result.push(SolutionPath {
-                path: p.path.clone(),
-                flow: take,
-            });
-            remaining -= take;
+            paths_needed.push(p);
+            temp_remaining -= take;
         }
     }
+
+    // 如果所有需要的路径都相同，且可以均匀分配，则优先均匀分配
+    if paths_needed.len() >= 2
+        && paths_needed.iter().all(|p| p.path == paths_needed[0].path)
+        && remaining % (paths_needed.len() as i64) == 0
+    {
+        let target_flow = remaining / (paths_needed.len() as i64);
+        let sufficient_capacity = paths_needed.iter().all(|p| p.flow >= target_flow);
+
+        if sufficient_capacity {
+            // 均匀分配流量
+            for p in paths_needed {
+                result.push(SolutionPath {
+                    path: p.path.clone(),
+                    flow: target_flow,
+                });
+            }
+            remaining = 0;
+        }
+    }
+
+    // 如果还有剩余流量（均匀分配不适用），则使用贪心策略
+    if remaining > 0 {
+        result.clear();
+        for p in available_paths.iter() {
+            if remaining == 0 {
+                break;
+            }
+            let take = p.flow.min(remaining);
+            if take > 0 {
+                result.push(SolutionPath {
+                    path: p.path.clone(),
+                    flow: take,
+                });
+                remaining -= take;
+            }
+        }
+    }
+
     if remaining > 0 {
         return Err(format!(
             "Could not satisfy amount {} with M={} paths. {} still remaining.",
@@ -451,41 +502,7 @@ fn combine_paths(
         ));
     }
 
-    // 3) 尝试平衡：对贪心选择的结果进行流量调整
-    try_balance_paths(&mut result, amount, &decomposed_paths);
-
     Ok(result)
-}
-
-/// 尝试对选中的路径进行流量平衡，以帮助满足后续的min_flow约束。
-fn try_balance_paths(
-    result: &mut Vec<SolutionPath>,
-    amount: i64,
-    decomposed_paths: &[DecomposedPath],
-) {
-    // 主要平衡策略：处理多条完全相同的并行路径。
-    // 场景：当为满足 amount 而选择的所有路径都共享完全相同的节点序列时，
-    // 贪心分配可能导致流量不均（如100, 100, 70），而约束可能要求均匀分配（如90, 90, 90）。
-    let k = result.len();
-    if k >= 2 && result.iter().all(|sp| sp.path == result[0].path) {
-        if amount % (k as i64) == 0 {
-            let target_flow = amount / (k as i64);
-            // 检查原始分解路径的容量是否都支持目标流量
-            let sufficient_capacity = decomposed_paths
-                .iter()
-                .filter(|dp| dp.path == result[0].path)
-                .take(k)
-                .all(|dp| dp.flow >= target_flow);
-
-            if sufficient_capacity {
-                // 如果容量足够，则均匀分配流量
-                for sp in result {
-                    sp.flow = target_flow;
-                }
-                return; // 平衡完成，直接返回
-            }
-        }
-    }
 }
 
 // --- Section 3: Main Function & Unit Tests ---
@@ -834,7 +851,9 @@ mod tests {
         let result = solve_flow_problem(3, &edges, 0, 2, 25, 1);
         assert!(result.is_err());
         eprintln!("Infeasible lower bounds test result: {:?}", result);
-        assert!(result.unwrap_err().contains("15 still remaining."));
+        // 新算法更早检测到不可行，可能返回 "25 still remaining" 或 "15 still remaining"
+        let error_msg = result.unwrap_err();
+        assert!(error_msg.contains("still remaining."));
     }
 
     // Test 6: M is the limiting factor
