@@ -1,6 +1,9 @@
 // main.rs
 
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    path,
+};
 
 // --- Section 1: Public-Facing Structs & API ---
 
@@ -217,37 +220,75 @@ fn validate_min_flow_constraints(
         }
     }
 
-    // 聚合并行边的约束，因为算法内部也是这样处理的
-    let mut aggregated_edges: HashMap<(usize, usize), (i64, i64)> = HashMap::new();
+    // 严格的min_flow验证：当多条路径使用相同的边对时，
+    // 每条路径的流量都必须能够分配到满足min_flow要求的物理边上
 
+    let mut aggregated_max_flows: HashMap<(usize, usize), i64> = HashMap::new();
     for edge in original_edges {
-        let entry = aggregated_edges
+        *aggregated_max_flows
             .entry((edge.from, edge.to))
-            .or_insert((0, 0));
-        entry.0 += edge.min_flow; // 聚合min_flow
-        entry.1 += edge.max_flow; // 聚合max_flow
+            .or_insert(0) += edge.max_flow;
     }
 
-    // 检查聚合后的边约束
-    for ((from, to), (min_flow, max_flow)) in aggregated_edges {
-        let actual_flow = edge_flows.get(&(from, to)).unwrap_or(&0);
-
-        // 如果边被使用了（流量 > 0），检查min_flow约束
-        if *actual_flow > 0 && min_flow > 0 {
-            if *actual_flow < min_flow {
-                return Err(format!(
-                    "Min flow constraint violated: edge ({}->{}) requires min_flow={} but got {}",
-                    from, to, min_flow, actual_flow
-                ));
-            }
-        }
-
-        // 检查max_flow约束
-        if *actual_flow > max_flow {
+    // 检查max_flow约束
+    for ((from, to), max_flow) in &aggregated_max_flows {
+        let actual_flow = edge_flows.get(&(*from, *to)).unwrap_or(&0);
+        if *actual_flow > *max_flow {
             return Err(format!(
                 "Max flow constraint violated: edge ({}->{}) has max_flow={} but got {}",
                 from, to, max_flow, actual_flow
             ));
+        }
+    }
+
+    // 对于min_flow约束：检查路径-边的分配可行性
+    let mut parallel_groups: HashMap<(usize, usize), Vec<&InputEdge>> = HashMap::new();
+    for edge in original_edges {
+        parallel_groups
+            .entry((edge.from, edge.to))
+            .or_insert(Vec::new())
+            .push(edge);
+    }
+
+    for ((from, to), edges) in parallel_groups {
+        let actual_flow = edge_flows.get(&(from, to)).unwrap_or(&0);
+
+        if *actual_flow > 0 {
+            // 计算有多少条路径使用了这个边对
+            let mut path_flows_on_edge = Vec::new();
+            for path_solution in solution {
+                for i in 0..path_solution.path.len() - 1 {
+                    let path_from = path_solution.path[i];
+                    let path_to = path_solution.path[i + 1];
+                    if path_from == from && path_to == to {
+                        path_flows_on_edge.push(path_solution.flow);
+                        break; // 每条路径只计算一次
+                    }
+                }
+            }
+
+            // 降序排序路径流量和边的min_flow要求
+            path_flows_on_edge.sort_unstable_by(|a, b| b.cmp(a));
+            let mut edge_low_bounds: Vec<_> = edges.iter().map(|x| x.min_flow).collect();
+            edge_low_bounds.sort_unstable_by(|a, b| b.cmp(a));
+
+            if path_flows_on_edge.iter().sum::<i64>() < edge_low_bounds.iter().sum::<i64>() {
+                return Err(format!(
+                    "Min flow constraint violated: total path flow {} cannot satisfy total min_flow={} on edge ({}->{})",
+                    path_flows_on_edge.iter().sum::<i64>(),
+                    edge_low_bounds.iter().sum::<i64>(),
+                    from,
+                    to
+                ));
+            }
+            for i in 0..path_flows_on_edge.len().min(edge_low_bounds.len()) {
+                if path_flows_on_edge[i] < edge_low_bounds[i] {
+                    return Err(format!(
+                        "Min flow constraint violated: path with flow {} cannot satisfy min_flow={} on edge ({}->{})",
+                        path_flows_on_edge[i], edge_low_bounds[i], from, to
+                    ));
+                }
+            }
         }
     }
 
@@ -441,7 +482,6 @@ mod tests {
                 min_flow: 90,
                 max_flow: 100,
             },
-            // 合并后 0->1 cap 200
             InputEdge {
                 from: 1,
                 to: 2,
@@ -452,7 +492,35 @@ mod tests {
 
         let result = solve_flow_problem(3, &edges, 0, 2, 189, 2);
         eprintln!("Result for amount=189, M=2: {:?}", result);
-        assert!(result.is_err());
+        assert!(result.is_err()); // expect to fail, edge_0 need send at least 90, edge_1 also need send at least 90
+    }
+
+    #[test]
+    fn test_simple_split_min_flow_ok() {
+        let edges = vec![
+            InputEdge {
+                from: 0,
+                to: 1,
+                min_flow: 90,
+                max_flow: 100,
+            },
+            InputEdge {
+                from: 0,
+                to: 1,
+                min_flow: 90,
+                max_flow: 100,
+            },
+            InputEdge {
+                from: 1,
+                to: 2,
+                min_flow: 0,
+                max_flow: 320,
+            },
+        ];
+
+        let result = solve_flow_problem(3, &edges, 0, 2, 180, 2);
+        eprintln!("Result for amount=180, M=2: {:?}", result);
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -496,7 +564,7 @@ mod tests {
 
     // Test 1 & 2 from problem: amount=150, M=1 (fail), M=3 (succeed)
     #[test]
-    fn test_simple_split() {
+    fn test_simple_split_3() {
         let edges = vec![
             InputEdge {
                 from: 0,
